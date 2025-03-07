@@ -1,55 +1,57 @@
 
 
-function Write-Log (){  
-    <#
-    .SYNOPSIS
-        Writes a formatted log message to a file with optional terminal output
+if (-not (Get-Module -Name "SATLogger")) {
+    function New-LogMessage (){  
+        <#
+        .SYNOPSIS
+            Writes a formatted log message to a file with optional terminal output
 
-    .DESCRIPTION
-        Write-Log is a function that outputs log messages with timestamps and severity
-        to a file and, optionally, to the terminal. Log messages can be filtered based
-        on a global $log_level variable with a value set to 0 (DEBUG), 1 (INFO), 2 
-        (WARN), 3 (ERROR), or 4 (CRITICAL). Setting $log_level = 0 will result in the
-        most verbose logs, while $log_level = 4 will only output critical exceptions.
+        .DESCRIPTION
+            New-LogMessage is a function that outputs log messages with timestamps and sev-
+            erity to a file and, optionally, to the terminal. Log messages can be filtered 
+            based on a global $log_level variable with a value set to 0 (DEBUG), 1 (INFO), 
+            2 (WARN), 3 (ERROR), or 4 (CRITICAL). Setting $log_level = 0 will result in the
+            most verbose logs, while $log_level = 4 will only output critical exceptions.
 
-    .PARAMETER message
-        The message you would like to output to the log file. Type: String
+        .PARAMETER message
+            The message you would like to output to the log file. Type: String
 
-    .PARAMETER severity
-        The severity of the logged action. Type: Integer [0-4]. 0 = DEBUG,
-        1 = INFO, 2 = WARN, 3 = ERROR, 4 = CRITICAL
+        .PARAMETER severity
+            The severity of the logged action. Type: Integer [0-4]. 0 = DEBUG,
+            1 = INFO, 2 = WARN, 3 = ERROR, 4 = CRITICAL
 
-    .EXAMPLE
-        Write-Log -message "Reboot required" -severity 2
+        .EXAMPLE
+            Write-Log -message "Reboot required" -severity 2
 
-    .INPUTS
-        String, Integer
+        .INPUTS
+            String, Integer
 
-    .OUTPUTS
-        Null
+        .OUTPUTS
+            Null
 
-    #>
-    [CmdletBinding()]
-    param (
-        [Parameter(Mandatory=$true)]
-        [string]$message,
+        #>
+        [CmdletBinding()]
+        param (
+            [Parameter(Mandatory=$true)]
+            [string]$message,
 
-        [ValidateNotNullOrEmpty()]
-        [int]$severity = 1
-    )
-    $type = $null
-    switch ($severity){
-        0 { $type = "[DEBUG]" }
-        1 { $type = "[INFO]" }
-        2 { $type = "[WARN]"  }
-        3 { $type = "[ERROR]" }
-        default {$type = "[INFO]" }
-    }
-    $date = get-date -Format "yyyy-MM-dd hh:mm:ss"
-    $log_message = $date + "`t" + $type + "`t" + $message
-    if($severity -ge $jira_config.log_level){
-        Write-Host $log_message
-        $log_message | Out-File $jira_config.log_file -Append
+            [ValidateNotNullOrEmpty()]
+            [int]$severity = 1
+        )
+        $type = $null
+        switch ($severity){
+            0 { $type = "[DEBUG]" }
+            1 { $type = "[INFO]" }
+            2 { $type = "[WARN]"  }
+            3 { $type = "[ERROR]" }
+            default {$type = "[INFO]" }
+        }
+        $date = get-date -Format "yyyy-MM-dd hh:mm:ss"
+        $log_message = $date + "`t" + $type + "`t" + $message
+        if($severity -ge $jira_config.log_level){
+            Write-Host $log_message
+            $log_message | Out-File $jira_config.log_file -Append
+        }
     }
 }
 
@@ -110,15 +112,25 @@ function Get-JiraObjectsByType(){
     elseif($object_type_id){
         $search_string = @{
             "qlQuery" = "objectTypeId = $object_type_id"
-        } | ConvertTo-Json
+        } | ConvertTo-Json -Compress
     }
     
+    # Fetch total count:
+    $object_count = (Get-JiraAQLResultCount -aql_query $search_string)
+    if($object_count -gt 0){
+        New-LogMessage -Severity 0 -Message "Total results from query: $($object_count)"
+    }
+    else{
+        New-LogMessage -Severity 1 -Message "Total results from query: 0. Review query if this is unexpected"
+        return
+    }
+
     $all_objs = @()
     $start_val = 0
     try{
         $response = Invoke-RestMethod -Uri $url -Headers $headers -Method Post -Body $search_string
         if ($response.total -gt 0){       
-            while($all_objs.count -lt $response.total){
+            while($all_objs.count -lt $object_count){
                 $all_objs += $response.values
                 $start_val += 25
                 $url_with_params = $url + "?startAt=$start_val"
@@ -126,19 +138,70 @@ function Get-JiraObjectsByType(){
             }
         }
         else{
-            Write-Log "No results returned from GET request" -severity 2
-            Write-Log "Request URL: $url" -severity 2
-            Write-Log "Request Body: $search_string" -severity 2
+            New-LogMessage -Message "No results returned from GET request" -severity 2
+            New-LogMessage -Message "Request URL: $url" -severity 2
+            New-LogMessage -Message "Request Body: $search_string" -severity 2
         }
-        Write-Log "Fetched $($all_objs.count) objects from asset. Total objects: $($response.total)" -severity 0
-        Write-Log "Request URL: $url" -severity 0
-        Write-Log "Request Body: $search_string" -severity 0  
+        New-LogMessage -Message "Fetched $($all_objs.count) objects from asset. Total objects: $($response.total)" -severity 0
+        New-LogMessage -Message "Request URL: $url" -severity 0
+        New-LogMessage -Message "Request Body: $search_string" -severity 0  
         return $all_objs
     }
     catch{
-        Write-Log "Failed to query Asset API. Exception: $($error[0].exception.message)" -severity 3
-        Write-Log "Request URL: $url" -severity 2
-        Write-Log "Request Body: $search_string" -severity 2
+        New-LogMessage -Message "Failed to query Asset API. Exception: $($_.ErrorDetails.Message)" -severity 3
+        New-LogMessage -Message "Request URL: $url" -severity 2
+        New-LogMessage -Message "Request Body: $search_string" -severity 2
+    }
+}
+
+function Get-JiraAQLResultCount(){
+    <#
+    .SYNOPSIS
+        Fetches the total number of results for an AQL query
+
+    .DESCRIPTION
+        Fetches the total number of results for an AQL query
+
+    .PARAMETER aql_query
+        The ID of the object type in Assets. Type: Integer
+
+    .EXAMPLE
+        Get-JiraAQLResultCount -query
+
+    .INPUTS
+        string
+
+    .OUTPUTS
+        PSCustomObject, $false
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory=$true)]
+        [string]$aql_query
+    )
+    $url = "https://api.atlassian.com/jsm/assets/workspace/$($workspace_id)/v1/object/aql/totalcount"
+    $headers = @{
+        "Accept" = "application/json";
+        "Content-Type" = "application/json";
+        "Authorization"= "Basic $token"
+    }
+
+    try{
+        if($result = Invoke-RestMethod -Uri $url -headers $headers -Method Post -Body $aql_query){
+            New-LogMessage -Message "Fetched total count for query: $($aql_query). Count: $($result.totalCount)" -severity 0
+            New-LogMessage -Message "GET URL: $url" -severity 0
+            return $result.TotalCount
+        }
+        else{
+            New-LogMessage -Message "Failed to fetch total count for query: $($aql_query)" -severity 0
+            New-LogMessage -Message "Failed GET URL: $url" -severity 0
+            return $false
+        }
+    }
+    catch{
+        New-LogMessage -Message "Failed to fetch total count for query: $($aql_query). Exception: $($_.ErrorDetails.Message)" -severity 2
+        New-LogMessage -Message "Failed GET URL: $url" -severity 0
+        return $false
     }
 }
 
@@ -176,19 +239,19 @@ function Get-JiraObjectSchema(){
     }
     try{
         if($result = Invoke-RestMethod -Uri $url -headers $headers -Method Get){
-            Write-Log "Fetched schema for object type: $($object_type_id)" -severity 0
-            Write-Log "GET URL: $url" -severity 0
+            New-LogMessage -Message "Fetched schema for object type: $($object_type_id)" -severity 0
+            New-LogMessage -Message "GET URL: $url" -severity 0
             return $result
         }
         else{
-            Write-Log "Failed to fetch schema for object type: $($object_type_id)" -severity 0
-            Write-Log "Failed GET URL: $url" -severity 0
+            New-LogMessage -Message "Failed to fetch schema for object type: $($object_type_id)" -severity 0
+            New-LogMessage -Message "Failed GET URL: $url" -severity 0
             return $false
         }
     }
     catch{
-        Write-Log "Failed to fetch object schema for object type: $($object_type_id). Exception $($error[0].exception.message)" -severity 2
-        Write-Log "Failed GET URL: $url" -severity 0
+        New-LogMessage -Message "Failed to fetch object schema for object type: $($object_type_id). Exception: $($_.ErrorDetails.Message)" -severity 2
+        New-LogMessage -Message "Failed GET URL: $url" -severity 0
         return $false
     }
 }
@@ -230,19 +293,19 @@ function Get-JiraObject(){
     try{
         $response = Invoke-RestMethod -Uri $url -Headers $headers -Method Get
         if($response.objectKey){
-            Write-Log "Fetched $($response.objectkey)" -severity 0
-            Write-Log "GET URL: $url" -severity 0
+            New-LogMessage -Message "Fetched $($response.objectkey)" -severity 0
+            New-LogMessage -Message "GET URL: $url" -severity 0
             return $response
         }
         else{
-            Write-Log "Failed to fetch object with ID $($object_id). Response: $($response)" -severity 2
-            Write-Log "Failed GET URL: $url" -severity 2
+            New-LogMessage -Message "Failed to fetch object with ID $($object_id). Response: $($response)" -severity 2
+            New-LogMessage -Message "Failed GET URL: $url" -severity 2
             return $false
         }
     }
     catch{
-        Write-Log "Failed to fetch object with ID $($object_id). Exception: $($error[0].exception.message)" -severity 2
-        Write-Log "Failed GET URL: $url" -severity 2
+        New-LogMessage -Message "Failed to fetch object with ID $($object_id). Exception: $($_.ErrorDetails.Message)" -severity 2
+        New-LogMessage -Message "Failed GET URL: $url" -severity 2
         return $false
     }
 
@@ -287,27 +350,34 @@ function Get-JiraObjectAQL(){
         "qlQuery" = $query
     } | convertto-json -compress
 
+    $object_count = (Get-JiraAQLResultCount -aql_query $body)
 
+    $all_objs = @()
+    $start_val = 0
     try{
         $response = Invoke-RestMethod -Uri $url -Headers $headers -Method Post -Body $body
-        if($response.total -gt 0){
-            Write-Log "Fetched query results for $($query)" -severity 0
-            Write-Log "POST URL: $url" -severity 0
-            Write-Log "POST Body: $body" -severity 0
-            return $response.values
+        if ($response.total -gt 0){       
+            while($all_objs.count -lt $object_count){
+                $all_objs += $response.values
+                $start_val += 25
+                $url_with_params = $url + "?startAt=$start_val"
+                $response = Invoke-RestMethod -Uri $url_with_params -Headers $headers -Method Post -Body $body
+            }
         }
         else{
-            Write-Log "No results for $($query). Response: $($response)" -severity 1
-            Write-Log "POST URL: $url" -severity 2
-            Write-Log "POST Body: $body" -severity 2
-            return $false
+            New-LogMessage -Message "No results returned from GET request" -severity 2
+            New-LogMessage -Message "Request URL: $url" -severity 2
+            New-LogMessage -Message "Request Body: $search_string" -severity 2
         }
+        New-LogMessage -Message "Fetched $($all_objs.count) objects from asset. Total objects: $($response.total)" -severity 0
+        New-LogMessage -Message "Request URL: $url" -severity 0
+        New-LogMessage -Message "Request Body: $search_string" -severity 0  
+        return $all_objs
     }
     catch{
-        Write-Log "Failed to fetch query results for $($query). Exception: $($error[0].exception.message)" -severity 2
-        Write-Log "Failed POST URL: $url" -severity 2
-        Write-Log "Failed POST Body: $body" -severity 2
-        return $false
+        New-LogMessage -Message "Failed to query Asset API. Exception: $($_.ErrorDetails.Message)" -severity 3
+        New-LogMessage -Message "Request URL: $url" -severity 2
+        New-LogMessage -Message "Request Body: $search_string" -severity 2
     }
 }
 
@@ -365,28 +435,28 @@ function Get-JiraObjectByNameType(){
     try{
         $response = Invoke-RestMethod -Uri $url -Headers $headers -Method Post -Body $body
         if($response.total -eq 1){
-            Write-Log "Fetched $($object_label) of type $($object_type_id)" -severity 0
-            Write-Log "POST URL: $url" -severity 0
-            Write-Log "POST Body: $body" -severity 0
+            New-LogMessage -Message "Fetched $($object_label) of type $($object_type_id)" -severity 0
+            New-LogMessage -Message "POST URL: $url" -severity 0
+            New-LogMessage -Message "POST Body: $body" -severity 0
             return $response.values[0]
         }
         elseif($response.total -gt 1){
-            Write-Log "Ambiguous query. More than one result returned. Total results: $($response.total)" - severity 2
-            Write-Log "POST URL: $url" -severity 0
-            Write-Log "POST Body: $body" -severity 0
+            New-LogMessage -Message "Ambiguous query. More than one result returned. Total results: $($response.total)" - severity 2
+            New-LogMessage -Message "POST URL: $url" -severity 0
+            New-LogMessage -Message "POST Body: $body" -severity 0
             return $false
         }
         else{
-            Write-Log "No results for $($object_label) of type: $($object_type_id). Response: $($response)" -severity 2
-            Write-Log "POST URL: $url" -severity 2
-            Write-Log "POST Body: $body" -severity 2
+            New-LogMessage -Message "No results for $($object_label) of type: $($object_type_id). Response: $($response)" -severity 2
+            New-LogMessage -Message "POST URL: $url" -severity 2
+            New-LogMessage -Message "POST Body: $body" -severity 2
             return $false
         }
     }
     catch{
-        Write-Log "Failed to fetch object $($object_label) of type: $($object_type_id). Exception: $($error[0].exception.message.Message)" -severity 2
-        Write-Log "Failed POST URL: $url" -severity 2
-        Write-Log "Failed POST Body: $body" -severity 2
+        New-LogMessage -Message "Failed to fetch object $($object_label) of type: $($object_type_id). Exception: $($_.ErrorDetails.Message.Message)" -severity 2
+        New-LogMessage -Message "Failed POST URL: $url" -severity 2
+        New-LogMessage -Message "Failed POST Body: $body" -severity 2
         return $false
     }
 }
@@ -427,19 +497,19 @@ function Remove-JiraObject(){
 
     try{
         if(Invoke-RestMethod -Uri $url -Headers $headers -Method Delete){
-            Write-Log "Deleted $($object_id)" -severity 0
-            Write-Log "DELETE URL: $url" -severity 0
+            New-LogMessage -Message "Deleted $($object_id)" -severity 0
+            New-LogMessage -Message "DELETE URL: $url" -severity 0
             return $true
         }
         else{
-            Write-Log "Failed to fetch object with ID $($object_id). Response: $($response)" -severity 2
-            Write-Log "Failed DELETE URL: $url" -severity 2
+            New-LogMessage -Message "Failed to fetch object with ID $($object_id). Response: $($response)" -severity 2
+            New-LogMessage -Message "Failed DELETE URL: $url" -severity 2
             return $false
         }
     }
     catch{
-        Write-Log "Failed to fetch object with ID $($object_id). Exception: $($error[0].exception.message)" -severity 2
-        Write-Log "Failed DELETE URL: $url" -severity 2
+        New-LogMessage -Message "Failed to fetch object with ID $($object_id). Exception: $($_.ErrorDetails.Message)" -severity 2
+        New-LogMessage -Message "Failed DELETE URL: $url" -severity 2
         return $false
     }
 
@@ -467,7 +537,7 @@ function New-JiraObject(){
 
     .PARAMETER $object
         A PSCustomObject with property names that match the schema in Assets.
-        Use "Label" as the property name for the attribute with the label assign-
+        Use "Label" as the propert name for the attribute with the label assign-
         ment. 
 
     .PARAMETER $create_references
@@ -511,10 +581,10 @@ function New-JiraObject(){
 
     # Get the schema for the current object type
     if($schema = Get-JiraObjectSchema -object_type_id $object_type_id){
-        Write-Log "Obtained schema for object type id: $($object_type_id)." -severity 0
+        New-LogMessage -Message "Obtained schema for object type id: $($object_type_id)." -severity 0
     } 
     else{
-        Write-Log "Failed to obtain schema for object type id: $($object_type_id). Verify that the type id is correct." -severity 2
+        New-LogMessage -Message "Failed to obtain schema for object type id: $($object_type_id). Verify that the type id is correct." -severity 2
         return $false
     }
 
@@ -530,38 +600,38 @@ function New-JiraObject(){
             # reference object maps to the label in Asset
             if($property.name -eq "Label"){
                 $schema_property = $schema | where-object {$_.label -eq $true}
-                Write-Log "Schema property: $($schema_property.name). Value: $($property.value)." -severity 0
+                New-LogMessage -Message "Schema property: $($schema_property.name). Value: $($property.value)." -severity 0
             }
             elseif($schema_property = $schema | where-object {$_.name -eq $property.name}){
-                Write-Log "Schema property: $($schema_property.name). Value: $($property.value)." -severity 0
+                New-LogMessage -Message "Schema property: $($schema_property.name). Value: $($property.value)." -severity 0
             }
             else{
                 # No matching attribute in schema. This may be expected - especially when calling the function within the 
                 # function. Skip
-                Write-Log "Attribute '$($property.name)' not found in schema for object type $($object_type_id). Check that the name of the object property matches the name in the object schema in Asset." -severity 2
+                New-LogMessage -Message "Attribute '$($property.name)' not found in schema for object type $($object_type_id). Check that the name of the object property matches the name in the object schema in Asset." -severity 2
             }
             if($schema_property){
                 if($schema_property.referenceObjectTypeId){
                     # Reference object type. Need to confirm a reference object exists
-                    Write-Log "$($property.name) is a reference object with type id: $($schema_property.referenceObjectTypeId)" -severity 0
+                    New-LogMessage -Message "$($property.name) is a reference object with type id: $($schema_property.referenceObjectTypeId)" -severity 0
                     
                     
                     # If the reference object exists, attach the id to the attribute, otherwise, create a new object of the reference type
                     foreach($value in $property.value){
 
                         # Select the reference object with matching value
-                        Write-Log "Fetching property value for $($value | Out-String)" -severity 0
+                        New-LogMessage -Message "Fetching property value for $($value | Out-String)" -severity 0
                         if($ref_object = Get-JiraObjectByNameType -object_label $property.value -object_type_id $schema_property.referenceObjectTypeId){
                             # Attach this reference object to the new request
                             $values += @{"value" = $ref_object.id}
                         }
                         else{
                             # We can create a stub type, but we don't necessarily know what the additional attributes are
-                            Write-Log "No matching reference object found for $($property.value)" -severity 2
+                            New-LogMessage -Message "No matching reference object found for $($property.value)" -severity 2
 
                             if($create_references){
 
-                                Write-Log "Reference object creation set to 'true', creating reference object for $($property.value)" -severity 1
+                                New-LogMessage -Message "Reference object creation set to 'true', creating reference object for $($property.value)" -severity 1
                                 $reference_schema = Get-JiraObjectSchema -object_type_id $schema_property.referenceObjectTypeId
 
                                 $new_reference_object = [PSCustomObject]@{
@@ -582,11 +652,11 @@ function New-JiraObject(){
                                     $values += @{"value" = $ref_object.id}
                                 }
                                 else{
-                                    Write-Log "Failed to create $($property.name) object for $($property.value)" -severity 2
+                                    New-LogMessage -Message "Failed to create $($property.name) object for $($property.value)" -severity 2
                                 }
                             }
                             else{
-                                Write-Log "Reference object creation disabled. Excluding $($property.name) from the object. Create the reference object first" -severity 1
+                                New-LogMessage -Message "Reference object creation disabled. Excluding $($property.name) from the object. Create the reference object first" -severity 1
                             }
                         }
                     }
@@ -605,28 +675,28 @@ function New-JiraObject(){
         }
     }
 
-    Write-Log "Submitting request for new object creation: $($object.label)" -severity 0
+    New-LogMessage -Message "Submitting request for new object creation: $($object.label)" -severity 0
     $body = $request_body | ConvertTo-Json -Depth 10 -Compress
 
     try{
         $response = Invoke-RestMethod -Uri $url -Headers $headers -Method Post -Body $body
         if($response.objectKey){
-            Write-Log "Created object" -severity 1
-            Write-Log "POST URL: $url" -severity 1
-            Write-Log "POST Body: $body" -severity 1
+            New-LogMessage -Message "Created object" -severity 1
+            New-LogMessage -Message "POST URL: $url" -severity 1
+            New-LogMessage -Message "POST Body: $body" -severity 1
             return $response
         }
         else{
-            Write-Log "Failed to create object. Response: $($response)" -severity 2
-            Write-Log "Failed POST URL: $url" -severity 2
-            Write-Log "Failed POST Body: $body" -severity 2
+            New-LogMessage -Message "Failed to create object. Response: $($response)" -severity 2
+            New-LogMessage -Message "Failed POST URL: $url" -severity 2
+            New-LogMessage -Message "Failed POST Body: $body" -severity 2
             return $false
         }
     }
     catch{
-        Write-Log "Failed to create object. Exception: $($error[0].exception.message)" -severity 2
-        Write-Log "Failed POST URL: $url" -severity 2
-        Write-Log "Failed POST Body: $body" -severity 2
+        New-LogMessage -Message "Failed to create object. Exception: $($_.ErrorDetails.Message)" -severity 2
+        New-LogMessage -Message "Failed POST URL: $url" -severity 2
+        New-LogMessage -Message "Failed POST Body: $body" -severity 2
         return $false
     }
 }
@@ -670,8 +740,8 @@ function Get-AttributeUpdate(){
         [Parameter(Mandatory=$true)]
         [PSCustomObject]$reference_object,
 
-        [Parameter(Mandatory=$true)]
-        $attribute_value,
+        [Parameter(Mandatory=$false)]
+        [Object]$attribute_value,
 
         [Parameter(Mandatory=$true)]
         [int]$attribute_id,
@@ -686,15 +756,15 @@ function Get-AttributeUpdate(){
             if(($asset_attribute.objectAttributeValues.referencedobject.id | Where-Object {$attribute_value -notcontains $_}) -or `
                 ($attribute_value | Where-Object {$asset_attribute.objectAttributevalues.referencedobject.id -notcontains $_})){
                 $update = $true
-                Write-Log "Updating $($reference_object.label). Attribute ID: $($attribute_id), Attribute value: $($attribute_value -join ","), Old value: $($asset_attribute.objectAttributeValues.referencedobject.id -join ",")" -severity 0
+                New-LogMessage -Message "Updating $($reference_object.label). Attribute ID: $($attribute_id), Attribute value: $($attribute_value -join ","), Old value: $($asset_attribute.objectAttributeValues.referencedobject.id -join ",")" -severity 0
             }
         } elseif($asset_attribute.objectAttributeValues.value -ne $attribute_value){
-            Write-Log "Updating $($reference_object.label). Attribute ID: $($attribute_id), Attribute value: $($attribute_value), Old value $($asset_attribute.objectAttributeValues.value)" -severity 0
+            New-LogMessage -Message "Updating $($reference_object.label). Attribute ID: $($attribute_id), Attribute value: $($attribute_value), Old value $($asset_attribute.objectAttributeValues.value)" -severity 0
             $update = $true
         }
     } 
     else{
-        Write-Log "Updating $($reference_object.label). Attribute ID: $($attribute_id), Attribute value: $($attribute_value -join ",")"
+        New-LogMessage -Message "Updating $($reference_object.label). Attribute ID: $($attribute_id), Attribute value: $($attribute_value -join ",")"
         $update = $true
     }
 
@@ -719,7 +789,7 @@ function Set-JiraObject(){
         Udpates an existing object in Jira Assets.
 
     .DESCRIPTION
-        Updates and existing object in Jira Assets. The property names must match
+        Updates an existing object in Jira Assets. The property names must match
         the property names in Assets. If the $create_references parameter is set 
         to $true, reference property values which do not exist in Assets will be 
         created. For example, if a Computer object has a reference property for 
@@ -735,7 +805,7 @@ function Set-JiraObject(){
 
     .PARAMETER $updated_object
         A PSCustomObject with property names that match the schema in Assets.
-        Use "Label" as the propert name for the attribute with the label assign-
+        Use "Label" as the property name for the attribute with the label assign-
         ment. 
 
     .PARAMETER $create_references
@@ -767,9 +837,9 @@ function Set-JiraObject(){
 
     # Get the schema for the current object type
     if($schema = Get-JiraObjectSchema -object_type_id $reference_object.objectType.id){
-        Write-Log "Obtained schema for object type id: $($reference_object.objectType.id)." -severity 0
+        New-LogMessage -Message "Obtained schema for object type id: $($reference_object.objectType.id)." -severity 0
     } else{
-        Write-Log "Failed to obtain schema for object type id: $($reference_object.objectType.id). Verify that the type id is correct." -severity 2
+        New-LogMessage -Message "Failed to obtain schema for object type id: $($reference_object.objectType.id). Verify that the type id is correct." -severity 2
         return $false
     }
 
@@ -779,32 +849,32 @@ function Set-JiraObject(){
 
         if($property.name -eq "Label"){
             $reference_property = $schema | where-object {$_.label -eq $true}
-            Write-Log "Reference property: $($reference_property.name). Property value: $($property.value)" -severity 0
+            New-LogMessage -Message "Reference property: $($reference_property.name). Property value: $($property.value)" -severity 0
         }elseif($reference_property = $schema | where-object {$_.name -eq $property.name}){
-            Write-Log "Reference property: $($reference_property.name). Property value: $($property.value)" -severity 0
+            New-LogMessage -Message "Reference property: $($reference_property.name). Property value: $($property.value)" -severity 0
         }
 
         if($reference_property){
             if($reference_property.referenceObjectTypeId){
                 # This is a reference attributes. We have work to do
                 $is_reference = $true
-                Write-Log "$($property.name) is a reference object with type id: $($reference_property.referenceObjectTypeId)." -severity 0
+                New-LogMessage -Message "$($property.name) is a reference object with type id: $($reference_property.referenceObjectTypeId)." -severity 0
                 
                 # For reference attributes, we need to replace names in the value list with IDs
                 $reference_attributes = @()
                 foreach($value in $property.value){
                     # Fetch the reference attribute's object
-                    Write-Log "Fetching property value for $($value | Out-String)" -severity 0
+                    New-LogMessage -Message "Fetching property value for $($value | Out-String)" -severity 0
                     if($reference_attribute = Get-JiraObjectByNameType -object_label $property.value -object_type_id $reference_property.referenceObjectTypeId){
                         # It exists in Assets. Append to the pointer_objects list
                         $reference_attributes += $reference_attribute.id
                     }
                     else{
                         # If it doesn't exist in Assets, the reference object needs to be created
-                        Write-Log "No matching reference object found for $($property.value)." -severity 2
+                        New-LogMessage -Message "No matching reference object found for $($property.value)." -severity 2
                         
                         if($create_references){
-                            Write-Log "Reference object creation set to 'true', creating reference object for $($property.value)" -severity 1
+                            New-LogMessage -Message "Reference object creation set to 'true', creating reference object for $($property.value)" -severity 1
                             $reference_schema = Get-JiraObjectSchema -object_type_id $reference_property.referenceObjectTypeId
 
                             $new_reference_object = [PSCustomObject]@{
@@ -823,11 +893,11 @@ function Set-JiraObject(){
                                 $reference_attributes += $new_reference_attribute.id
                             }
                             else{
-                                Write-Log "Failed to create $($property.name) object for $($property.value)" -severity 2
+                                New-LogMessage -Message "Failed to create $($property.name) object for $($property.value)" -severity 2
                             }
                         }
                         else{
-                            Write-Log "Reference object creation disabled. Excluding $($property.name) from the object. Create the reference object first" -severity 1
+                            New-LogMessage -Message "Reference object creation disabled. Excluding $($property.name) from the object. Create the reference object first" -severity 1
                         }
                     }
                 }
@@ -843,13 +913,13 @@ function Set-JiraObject(){
             }
         }
         else{
-            Write-Log "$($property.name) not found in the properties for object type: $($reference_object.objectType.id). Check that the property name matches the object schema." -severity 2
+            New-LogMessage -Message "$($property.name) not found in the properties for object type: $($reference_object.objectType.id). Check that the property name matches the object schema." -severity 2
         }
     }
      
     if($update_attributes){
 
-        Write-Log "Putting updates to $($reference_object.label) ($($reference_object.objectKey))" -severity 1
+        New-LogMessage -Message "Putting updates to $($reference_object.label) ($($reference_object.objectKey))" -severity 1
 
         $url = "https://api.atlassian.com/jsm/assets/workspace/$($workspace_id)/v1/object/$($reference_object.id)"
 
@@ -868,26 +938,26 @@ function Set-JiraObject(){
         try{
             $response = Invoke-RestMethod -Uri $url -Headers $headers -Method Put -Body $body
             if($response.objectKey){
-                Write-Log "PUT URL: $url" -severity 0
-                Write-Log "PUT Body: $body" -severity 0
+                New-LogMessage -Message "PUT URL: $url" -severity 0
+                New-LogMessage -Message "PUT Body: $body" -severity 0
                 return $response
             }
             else{
-                Write-Log "Failed to update object for $($upd_dns.label). Response: $($response)" -severity 2
-                Write-Log "Failed PUT URL: $url" -severity 2
-                Write-Log "Failed PUT Body: $body" -severity 2
+                New-LogMessage -Message "Failed to update object for $($upd_dns.label). Response: $($response)" -severity 2
+                New-LogMessage -Message "Failed PUT URL: $url" -severity 2
+                New-LogMessage -Message "Failed PUT Body: $body" -severity 2
                 return $false
             }
         }
         catch{
-            Write-Log "Failed to update object for $($upd_dns.label). Exception: $($error[0].exception.message)" -severity 2
-            Write-Log "Failed PUT URL: $url" -severity 2
-            Write-Log "Failed PUT Body: $body" -severity 2
+            New-LogMessage -Message "Failed to update object for $($upd_dns.label). Exception: $($_.ErrorDetails.Message)" -severity 2
+            New-LogMessage -Message "Failed PUT URL: $url" -severity 2
+            New-LogMessage -Message "Failed PUT Body: $body" -severity 2
             return $false
         }
     }
     else{
-        Write-Log "No updates needed for $($reference_object.label)" -severity 0
+        New-LogMessage -Message "No updates needed for $($reference_object.label)" -severity 0
         return $true
     }
     
@@ -988,9 +1058,51 @@ function Get-Config(){
     }
     return $jira_config
 }
-# Load the configuration
-$jira_config = Get-Config
-$workspace_id = $jira_config.workspace_id 
-$auth_str = $jira_config.auth_string
-$Bytes = [System.Text.Encoding]::UTF8.GetBytes($auth_str) 
-$token = [Convert]::ToBase64String($Bytes) 
+
+
+# LOAD CONFIG
+$workspace_id = $null
+$auth_str = $null
+
+
+if($jira_config = Get-Secret -Name "jira_api" -ErrorAction SilentlyContinue){
+    if($PSVersionTable.PSversion.Major -gt 5){
+        $workspace_id = $jira_config.workspace_id | ConvertFrom-SecureString -AsPlainText
+        $auth_str = $jira_config.auth_string | ConvertFrom-SecureString -AsPlainText
+        $log_file = $jira_config.log_file | ConvertFrom-SecureString -AsPlainText
+        $log_level = $jira_config.log_level | ConvertFrom-SecureString -AsPlainText
+
+    }
+    elseif($PSVersionTable.PSversion.Major -le 5){
+        $BString = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($jira_config.workspace_id)
+        $workspace_id = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BString)
+
+        $BString2 = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($jira_config.auth_string)
+        $auth_str = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BString2)    
+
+        $BString3 = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($jira_config.log_file)
+        $log_file = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BString3) 
+
+        $BString4 = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($jira_config.log_level)
+        $log_level = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BString4) 
+
+    }
+    $jira_config = @{
+        log_file= $log_file
+        auth_string=$auth_str
+        log_level=[int]$log_level
+        workspace_id=$workspace_id
+    }
+}
+elseif($jira_config = Get-Config){
+    $workspace_id = $jira_config.workspace_id 
+    $auth_str = $jira_config.auth_string
+}
+
+if($workspace_id -and $auth_str){
+    $Bytes = [System.Text.Encoding]::UTF8.GetBytes($auth_str) 
+    $token = [Convert]::ToBase64String($Bytes) 
+}
+else{
+    New-LogMessage -Severity 3 -Message "Failed to load Jira Config. Ensure config file or 'jira_api' secret values include the workspace_id and auth_string values"
+}

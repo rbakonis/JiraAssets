@@ -8,7 +8,7 @@
 # Assets API Documentation: https://developer.atlassian.com/cloud/assets/rest/api-group-aql/#api-group-aql
 
 @{
-    ModuleVersion = '0.0.1'
+    ModuleVersion = '0.0.5'
     RootModule = 'JiraAssets.psm1'
     GUID = '8cd1c219-024c-4a90-b63d-0327ccd620ca'
     Author = 'Ryan Bakonis'
@@ -21,11 +21,11 @@
         "Get-JiraObjectByNameType",
         "Get-JiraObjectsByType", 
         "Get-JiraObjectSchema", 
+        "Get-JiraAQLResultCount",
         "New-JiraConfig"
         "New-JiraObject", 
         "Set-JiraObject", 
-        "Remove-JiraObject",
-        "Write-Log"
+        "Remove-JiraObject"
     )
 
 

@@ -24,6 +24,17 @@ A sample config file is provided below. Replace the `jira_auth_string` and `jira
     "workspace_id": "jira_workspace_id"
 }
 ```
+Alternatively, you can use a PowerShell secrets vault entry named `jira_api`
+
+```powershell
+$secret = @{
+  log_file="c:\path\to\jira_assets.log"
+  auth_string="jira_auth_string"
+  log_level=0
+  workspace_id="jira_workspace_id
+}
+Set-Secret jira_api -secret $secret
+```
 
 # Using the Module
 Refer to the examples below when using the module.
